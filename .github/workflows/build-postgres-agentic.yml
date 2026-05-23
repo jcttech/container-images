@@ -1,0 +1,76 @@
+name: build-postgres-agentic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "databases/postgres/agentic/**"
+      - ".github/workflows/build-postgres-agentic.yml"
+  pull_request:
+    paths:
+      - "databases/postgres/agentic/**"
+      - ".github/workflows/build-postgres-agentic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build-postgres-agentic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Build locally first so we can run the extension smoke test before
+      # publishing anything. The shared docker-build action push later
+      # benefits from the buildx cache populated here.
+      - name: Build locally for verification
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: databases/postgres/agentic/Dockerfile
+          load: true
+          tags: postgres-agentic:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify extensions
+        run: ./databases/postgres/agentic/verify.sh postgres-agentic:verify
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Shared action handles sha-tag dedup, :latest on default branch,
+      # and semver tagging from git refs.
+      - name: Build and push via shared action
+        if: github.event_name != 'pull_request'
+        uses: jcttech/.github/.github/actions/docker-build@v1
+        with:
+          sha: ${{ steps.sha.outputs.short }}
+          image-name: postgres-agentic
+          dockerfile: databases/postgres/agentic/Dockerfile
+
+      # The shared action's metadata-action config doesn't emit a major-
+      # version channel tag. Apply :18 explicitly so consumers can pin to
+      # the PG major.
+      - name: Apply :18 channel tag
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/jcttech/postgres-agentic:18 \
+            ghcr.io/jcttech/postgres-agentic:${{ steps.sha.outputs.short }}
