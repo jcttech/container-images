@@ -47,13 +47,23 @@ jobs:
       - name: Verify extensions
         run: ./databases/postgres/agentic/verify.sh postgres-agentic:verify
 
-      - name: Log in to GHCR
+      # Log in to both docker and podman: ubuntu-latest ships both, and the
+      # shared docker-build composite picks podman by detection order. With
+      # docker/login-action@v4 the docker credentials no longer reach podman
+      # (they did under v3), so we log podman in explicitly too.
+      - name: Log in to GHCR (docker)
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR (podman)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       # Shared action handles sha-tag dedup, :latest on default branch,
       # and semver tagging from git refs.
